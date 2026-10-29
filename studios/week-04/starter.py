@@ -14,6 +14,7 @@ You never factor a strong modulus. You attack the *conditions* RSA depends on:
 good independent entropy, and constant-time secret handling.
 """
 import math
+from itertools import zip_longest
 
 from rsa_lab import factor_from_shared, insecure_equal, make_oracle, time_guesses
 
@@ -34,9 +35,27 @@ def batch_gcd_recover(corpus):
     shared prime (both fall). Given the shared prime, ``factor_from_shared`` in
     rsa_lab turns it into d.
     """
-    # TODO: pairwise-GCD scan over corpus["keys"]; for any pair with gcd != 1,
-    # recover d for BOTH keys via factor_from_shared(n, gcd, e).
-    raise NotImplementedError
+    keys = corpus["keys"]
+    recovered = {}
+
+    # Each unordered pair only needs to be examined once.  A non-trivial GCD
+    # is a prime factor shared by both moduli, so it compromises both keys.
+    for i in range(len(keys)):
+        for j in range(i + 1, len(keys)):
+            shared = math.gcd(keys[i]["n"], keys[j]["n"])
+            if shared == 1:
+                continue
+
+            for index in (i, j):
+                key = keys[index]
+                # A proper factor is required.  This also avoids treating two
+                # accidentally duplicated moduli as the shared-prime case.
+                if 1 < shared < key["n"]:
+                    recovered[index] = factor_from_shared(
+                        key["n"], shared, key["e"]
+                    )
+
+    return recovered
 
 
 # ---- Task 3: timing side-channel attack -------------------------------------
@@ -54,11 +73,20 @@ def timing_attack(secret_len, oracle, rounds=41):
     ``time_guesses(oracle, guesses, rounds)`` (it interleaves them so drift can't
     bias one candidate), then keep the slowest byte.
     """
-    # TODO: for pos in range(secret_len):
-    #   guesses = [known_prefix + bytes([b]) + padding for b in range(256)]
-    #   med = time_guesses(oracle, guesses, rounds)
-    #   append the byte with the largest median time to the recovered prefix.
-    raise NotImplementedError
+    recovered = bytearray()
+
+    for position in range(secret_len):
+        padding = bytes(secret_len - position - 1)
+        guesses = [bytes(recovered) + bytes([candidate]) + padding
+                   for candidate in range(256)]
+        medians = time_guesses(oracle, guesses, rounds)
+
+        # The correct candidate matches one more byte, causing insecure_equal
+        # to execute one additional AMPLIFY loop before returning.
+        slowest = max(range(256), key=medians.__getitem__)
+        recovered.append(slowest)
+
+    return bytes(recovered)
 
 
 # ---- Task 3 (fix): constant-time comparison ---------------------------------
@@ -66,9 +94,12 @@ def timing_attack(secret_len, oracle, rounds=41):
 def constant_time_equal(a, b):
     """The fix. Examine EVERY byte regardless of mismatches, so the duration does
     not depend on the secret. (In real code, call ``hmac.compare_digest``.)"""
-    # TODO: length check, then accumulate x ^ y across all bytes; return whether
-    # the accumulator is 0 — never early-exit.
-    raise NotImplementedError
+    # Include the length mismatch in the accumulator instead of returning
+    # early.  zip_longest ensures that every byte in either input is visited.
+    difference = len(a) ^ len(b)
+    for x, y in zip_longest(a, b, fillvalue=0):
+        difference |= x ^ y
+    return difference == 0
 
 
 if __name__ == "__main__":
